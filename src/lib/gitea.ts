@@ -74,7 +74,7 @@ export const getGiteaRepoOwnerAsync = async ({
 
   // Check if repository is starred - starred repos always go to starredReposOrg (highest priority)
   if (repository.isStarred) {
-    return config.githubConfig.starredReposOrg || "starred";
+    return repository.organization || repository.owner;
   }
 
   // Check for repository-specific override (second highest priority)
@@ -119,7 +119,7 @@ export const getGiteaRepoOwner = ({
 
   // Check if repository is starred - starred repos always go to starredReposOrg
   if (repository.isStarred) {
-    return config.githubConfig.starredReposOrg || "starred";
+    return repository.organization || repository.owner;
   }
 
   // Get the mirror strategy - use preserveOrgStructure for backward compatibility

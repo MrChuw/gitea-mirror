@@ -257,7 +257,7 @@ export async function syncStarredRepositories({
         if (error instanceof Error && error.message.includes("not a mirror")) {
           console.warn(`Repository ${repository.name} is not a mirror, handling...`);
           
-          const starredOrg = config.githubConfig?.starredReposOrg || "starred";
+          const starredOrg = repository.organization || repository.owner;
           const repoInfo = await getGiteaRepoInfo({
             config,
             owner: starredOrg,
