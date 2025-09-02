@@ -117,7 +117,7 @@ export const getGiteaRepoOwner = ({
     throw new Error("Gitea username is required.");
   }
 
-  // Check if repository is starred - starred repos always go to starredReposOrg
+  // Check if repository is starred - starred repos always go to starredReposOrg.
   if (repository.isStarred) {
     return repository.organization || repository.owner;
   }
