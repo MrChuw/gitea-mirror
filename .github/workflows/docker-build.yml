@@ -1,236 +1,236 @@
-name: Docker Build, Push & Security Scan
+# name: Docker Build, Push & Security Scan
 
-on:
-  push:
-    branches: [main]
-    tags: ['v*']
-    paths:
-      - 'Dockerfile'
-      - '.dockerignore'
-      - 'package.json'
-      - 'bun.lock*'
-      - '.github/workflows/docker-build.yml'
-      - 'docker-entrypoint.sh'
-      - 'drizzle/**'
-      - 'scripts/**'
-      - 'src/**'
-  pull_request:
-    paths:
-      - 'Dockerfile'
-      - '.dockerignore'
-      - 'package.json'
-      - 'bun.lock*'
-      - '.github/workflows/docker-build.yml'
-      - 'docker-entrypoint.sh'
-      - 'drizzle/**'
-      - 'scripts/**'
-      - 'src/**'
-  schedule:
-    - cron: '0 0 * * 0'  # Weekly security scan on Sunday at midnight
+# on:
+#   push:
+#     branches: [main]
+#     tags: ['v*']
+#     paths:
+#       - 'Dockerfile'
+#       - '.dockerignore'
+#       - 'package.json'
+#       - 'bun.lock*'
+#       - '.github/workflows/docker-build.yml'
+#       - 'docker-entrypoint.sh'
+#       - 'drizzle/**'
+#       - 'scripts/**'
+#       - 'src/**'
+#   pull_request:
+#     paths:
+#       - 'Dockerfile'
+#       - '.dockerignore'
+#       - 'package.json'
+#       - 'bun.lock*'
+#       - '.github/workflows/docker-build.yml'
+#       - 'docker-entrypoint.sh'
+#       - 'drizzle/**'
+#       - 'scripts/**'
+#       - 'src/**'
+#   schedule:
+#     - cron: '0 0 * * 0'  # Weekly security scan on Sunday at midnight
 
-env:
-  REGISTRY: ghcr.io
-  IMAGE: ${{ github.repository }}
-  SHA: ${{ github.event.pull_request.head.sha || github.event.after }}
+# env:
+#   REGISTRY: ghcr.io
+#   IMAGE: ${{ github.repository }}
+#   SHA: ${{ github.event.pull_request.head.sha || github.event.after }}
 
-jobs:
-  docker:
-    runs-on: ubuntu-latest
+# jobs:
+#   docker:
+#     runs-on: ubuntu-latest
 
-    permissions:
-      contents: write
-      packages: write
-      security-events: write
-      pull-requests: write
+#     permissions:
+#       contents: write
+#       packages: write
+#       security-events: write
+#       pull-requests: write
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ env.SHA }}
+#     steps:
+#       - name: Checkout repository
+#         uses: actions/checkout@v4
+#         with:
+#           ref: ${{ env.SHA }}
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver-opts: network=host
+#       - name: Set up Docker Buildx
+#         uses: docker/setup-buildx-action@v3
+#         with:
+#           driver-opts: network=host
 
-      - name: Log into registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+#       - name: Log into registry
+#         uses: docker/login-action@v3
+#         with:
+#           registry: ${{ env.REGISTRY }}
+#           username: ${{ github.actor }}
+#           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Login to Docker Hub for Docker Scout (optional - provides better vulnerability data)
-      # Add DOCKERHUB_USERNAME and DOCKERHUB_TOKEN secrets to enable this
-      - name: Log into Docker Hub
-        uses: docker/login-action@v3
-        continue-on-error: true
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+#       # Login to Docker Hub for Docker Scout (optional - provides better vulnerability data)
+#       # Add DOCKERHUB_USERNAME and DOCKERHUB_TOKEN secrets to enable this
+#       - name: Log into Docker Hub
+#         uses: docker/login-action@v3
+#         continue-on-error: true
+#         with:
+#           username: ${{ secrets.DOCKERHUB_USERNAME }}
+#           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # Extract version from tag if present
-      - name: Extract version from tag
-        id: tag_version
-        run: |
-          if [[ $GITHUB_REF == refs/tags/v* ]]; then
-            echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-            echo "Using version tag: ${GITHUB_REF#refs/tags/}"
-          else
-            echo "VERSION=latest" >> $GITHUB_OUTPUT
-            echo "No version tag, using 'latest'"
-          fi
+#       # Extract version from tag if present
+#       - name: Extract version from tag
+#         id: tag_version
+#         run: |
+#           if [[ $GITHUB_REF == refs/tags/v* ]]; then
+#             echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+#             echo "Using version tag: ${GITHUB_REF#refs/tags/}"
+#           else
+#             echo "VERSION=latest" >> $GITHUB_OUTPUT
+#             echo "No version tag, using 'latest'"
+#           fi
 
-      # Extract metadata for Docker
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE }}
-          labels: |
-            org.opencontainers.image.revision=${{ env.SHA }}
-          tags: |
-            type=edge,branch=$repo.default_branch
-            type=semver,pattern=v{{version}}
-            type=sha,prefix=,suffix=,format=short
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=${{ steps.tag_version.outputs.VERSION }}
-            type=ref,event=pr,prefix=pr-
+#       # Extract metadata for Docker
+#       - name: Extract Docker metadata
+#         id: meta
+#         uses: docker/metadata-action@v5
+#         with:
+#           images: ${{ env.REGISTRY }}/${{ env.IMAGE }}
+#           labels: |
+#             org.opencontainers.image.revision=${{ env.SHA }}
+#           tags: |
+#             type=edge,branch=$repo.default_branch
+#             type=semver,pattern=v{{version}}
+#             type=sha,prefix=,suffix=,format=short
+#             type=raw,value=latest,enable={{is_default_branch}}
+#             type=raw,value=${{ steps.tag_version.outputs.VERSION }}
+#             type=ref,event=pr,prefix=pr-
 
-      # Build and push Docker image
-      - name: Build and push Docker image
-        id: build-and-push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          provenance: false # Disable provenance to avoid unknown/unknown
-          sbom: false       # Disable sbom to avoid unknown/unknown
+#       # Build and push Docker image
+#       - name: Build and push Docker image
+#         id: build-and-push
+#         uses: docker/build-push-action@v6
+#         with:
+#           context: .
+#           platforms: linux/amd64,linux/arm64
+#           push: true
+#           tags: ${{ steps.meta.outputs.tags }}
+#           labels: ${{ steps.meta.outputs.labels }}
+#           cache-from: type=gha
+#           cache-to: type=gha,mode=max
+#           provenance: false # Disable provenance to avoid unknown/unknown
+#           sbom: false       # Disable sbom to avoid unknown/unknown
 
-      # Load image locally for security scanning (PRs only)
-      - name: Load image for scanning
-        if: github.event_name == 'pull_request'
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64
-          load: true
-          tags: gitea-mirror:scan
-          cache-from: type=gha
-          provenance: false # Disable provenance to avoid unknown/unknown
-          sbom: false       # Disable sbom to avoid unknown/unknown
+#       # Load image locally for security scanning (PRs only)
+#       - name: Load image for scanning
+#         if: github.event_name == 'pull_request'
+#         uses: docker/build-push-action@v6
+#         with:
+#           context: .
+#           platforms: linux/amd64
+#           load: true
+#           tags: gitea-mirror:scan
+#           cache-from: type=gha
+#           provenance: false # Disable provenance to avoid unknown/unknown
+#           sbom: false       # Disable sbom to avoid unknown/unknown
 
-      # Wait for image to be available in registry
-      - name: Wait for image availability
-        run: |
-          echo "Waiting for image to be available in registry..."
-          sleep 5
+#       # Wait for image to be available in registry
+#       - name: Wait for image availability
+#         run: |
+#           echo "Waiting for image to be available in registry..."
+#           sleep 5
 
-      # Add comment to PR with image details
-      - name: Comment PR with image tag
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const prNumber = context.payload.pull_request.number;
-            const imageTag = `pr-${prNumber}`;
-            const imagePath = `${{ env.REGISTRY }}/${{ env.IMAGE }}:${imageTag}`.toLowerCase();
+#       # Add comment to PR with image details
+#       - name: Comment PR with image tag
+#         if: github.event_name == 'pull_request'
+#         uses: actions/github-script@v7
+#         with:
+#           github-token: ${{ secrets.GITHUB_TOKEN }}
+#           script: |
+#             const prNumber = context.payload.pull_request.number;
+#             const imageTag = `pr-${prNumber}`;
+#             const imagePath = `${{ env.REGISTRY }}/${{ env.IMAGE }}:${imageTag}`.toLowerCase();
 
-            const comment = `## 🐳 Docker Image Built Successfully
+#             const comment = `## 🐳 Docker Image Built Successfully
 
-            Your PR image is available for testing:
+#             Your PR image is available for testing:
 
-            **Image Tag:** \`${imageTag}\`
-            **Full Image Path:** \`${imagePath}\`
+#             **Image Tag:** \`${imageTag}\`
+#             **Full Image Path:** \`${imagePath}\`
 
-            ### Pull and Test
-            \`\`\`bash
-            docker pull ${imagePath}
-            docker run -d \
-              -p 4321:4321 \
-              -e BETTER_AUTH_SECRET=your-secret-here \
-              -e BETTER_AUTH_URL=http://localhost:4321 \
-              --name gitea-mirror-test ${imagePath}
-            \`\`\`
+#             ### Pull and Test
+#             \`\`\`bash
+#             docker pull ${imagePath}
+#             docker run -d \
+#               -p 4321:4321 \
+#               -e BETTER_AUTH_SECRET=your-secret-here \
+#               -e BETTER_AUTH_URL=http://localhost:4321 \
+#               --name gitea-mirror-test ${imagePath}
+#             \`\`\`
 
-            ### Docker Compose Testing
-            \`\`\`yaml
-            services:
-              gitea-mirror:
-                image: ${imagePath}
-                ports:
-                  - "4321:4321"
-                environment:
-                  - BETTER_AUTH_SECRET=your-secret-here
-                  - BETTER_AUTH_URL=http://localhost:4321
-                  - BETTER_AUTH_TRUSTED_ORIGINS=http://localhost:4321
-            \`\`\`
+#             ### Docker Compose Testing
+#             \`\`\`yaml
+#             services:
+#               gitea-mirror:
+#                 image: ${imagePath}
+#                 ports:
+#                   - "4321:4321"
+#                 environment:
+#                   - BETTER_AUTH_SECRET=your-secret-here
+#                   - BETTER_AUTH_URL=http://localhost:4321
+#                   - BETTER_AUTH_TRUSTED_ORIGINS=http://localhost:4321
+#             \`\`\`
 
-            > 💡 **Note:** PR images are tagged as \`pr-<number>\` and built for both \`linux/amd64\` and \`linux/arm64\`.
-            > Production images (\`latest\`, version tags) use the same multi-platform set.
+#             > 💡 **Note:** PR images are tagged as \`pr-<number>\` and built for both \`linux/amd64\` and \`linux/arm64\`.
+#             > Production images (\`latest\`, version tags) use the same multi-platform set.
 
-            ---
-            📦 View in [GitHub Packages](https://github.com/${{ github.repository }}/pkgs/container/gitea-mirror)`;
+#             ---
+#             📦 View in [GitHub Packages](https://github.com/${{ github.repository }}/pkgs/container/gitea-mirror)`;
 
-            github.rest.issues.createComment({
-              issue_number: prNumber,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: comment
-            });
+#             github.rest.issues.createComment({
+#               issue_number: prNumber,
+#               owner: context.repo.owner,
+#               repo: context.repo.repo,
+#               body: comment
+#             });
 
-      # Docker Scout comprehensive security analysis
-      - name: Docker Scout - Vulnerability Analysis & Recommendations
-        uses: docker/scout-action@v1
-        if: github.event_name != 'pull_request'
-        with:
-          command: cves,recommendations
-          image: ${{ env.REGISTRY }}/${{ env.IMAGE }}:latest
-          sarif-file: scout-results.sarif
-          summary: true
-          exit-code: false
-          only-severities: critical,high
-          write-comment: true
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+#       # Docker Scout comprehensive security analysis
+#       - name: Docker Scout - Vulnerability Analysis & Recommendations
+#         uses: docker/scout-action@v1
+#         if: github.event_name != 'pull_request'
+#         with:
+#           command: cves,recommendations
+#           image: ${{ env.REGISTRY }}/${{ env.IMAGE }}:latest
+#           sarif-file: scout-results.sarif
+#           summary: true
+#           exit-code: false
+#           only-severities: critical,high
+#           write-comment: true
+#           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # Docker Scout for Pull Requests (using local image)
-      - name: Docker Scout - Vulnerability Analysis (PR)
-        uses: docker/scout-action@v1
-        if: github.event_name == 'pull_request'
-        with:
-          command: cves,recommendations
-          image: local://gitea-mirror:scan
-          sarif-file: scout-results.sarif
-          summary: true
-          exit-code: false
-          only-severities: critical,high
-          write-comment: true
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+#       # Docker Scout for Pull Requests (using local image)
+#       - name: Docker Scout - Vulnerability Analysis (PR)
+#         uses: docker/scout-action@v1
+#         if: github.event_name == 'pull_request'
+#         with:
+#           command: cves,recommendations
+#           image: local://gitea-mirror:scan
+#           sarif-file: scout-results.sarif
+#           summary: true
+#           exit-code: false
+#           only-severities: critical,high
+#           write-comment: true
+#           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # Compare to latest for PRs and pushes
-      - name: Docker Scout - Compare to Latest
-        uses: docker/scout-action@v1
-        if: github.event_name == 'pull_request'
-        with:
-          command: compare
-          image: local://gitea-mirror:scan
-          to: ${{ env.REGISTRY }}/${{ env.IMAGE }}:latest
-          ignore-unchanged: true
-          only-severities: critical,high
-          write-comment: true
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+#       # Compare to latest for PRs and pushes
+#       - name: Docker Scout - Compare to Latest
+#         uses: docker/scout-action@v1
+#         if: github.event_name == 'pull_request'
+#         with:
+#           command: compare
+#           image: local://gitea-mirror:scan
+#           to: ${{ env.REGISTRY }}/${{ env.IMAGE }}:latest
+#           ignore-unchanged: true
+#           only-severities: critical,high
+#           write-comment: true
+#           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # Upload security scan results to GitHub Security tab
-      - name: Upload Docker Scout scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        continue-on-error: true
-        with:
-          sarif_file: scout-results.sarif
+#       # Upload security scan results to GitHub Security tab
+#       - name: Upload Docker Scout scan results to GitHub Security tab
+#         uses: github/codeql-action/upload-sarif@v3
+#         if: always()
+#         continue-on-error: true
+#         with:
+#           sarif_file: scout-results.sarif

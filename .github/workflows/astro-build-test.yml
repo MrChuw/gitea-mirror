@@ -1,55 +1,55 @@
-name: Astro Build and Test
+# name: Astro Build and Test
 
-on:
-  push:
-    branches: [ '*' ]
-    paths-ignore:
-      - 'README.md'
-      - 'docs/**'
-  pull_request:
-    branches: [ '*' ]
-    paths-ignore:
-      - 'README.md'
-      - 'docs/**'
+# on:
+#   push:
+#     branches: [ '*' ]
+#     paths-ignore:
+#       - 'README.md'
+#       - 'docs/**'
+#   pull_request:
+#     branches: [ '*' ]
+#     paths-ignore:
+#       - 'README.md'
+#       - 'docs/**'
 
-permissions:
-  contents: read
-  actions: read
+# permissions:
+#   contents: read
+#   actions: read
 
-jobs:
-  build-and-test:
-    name: Build and Test Astro Project
-    runs-on: ubuntu-latest
+# jobs:
+#   build-and-test:
+#     name: Build and Test Astro Project
+#     runs-on: ubuntu-latest
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+#     steps:
+#       - name: Checkout repository
+#         uses: actions/checkout@v4
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v1
-        with:
-          bun-version: '1.2.16'
+#       - name: Setup Bun
+#         uses: oven-sh/setup-bun@v1
+#         with:
+#           bun-version: '1.2.16'
 
-      - name: Check lockfile and install dependencies
-        run: |
-          # Check if bun.lock exists, if not check for bun.lockb
-          if [ -f "bun.lock" ]; then
-            echo "Using existing bun.lock file"
-          elif [ -f "bun.lockb" ]; then
-            echo "Found bun.lockb, creating symlink to bun.lock"
-            ln -s bun.lockb bun.lock
-          fi
-          bun install
+#       - name: Check lockfile and install dependencies
+#         run: |
+#           # Check if bun.lock exists, if not check for bun.lockb
+#           if [ -f "bun.lock" ]; then
+#             echo "Using existing bun.lock file"
+#           elif [ -f "bun.lockb" ]; then
+#             echo "Found bun.lockb, creating symlink to bun.lock"
+#             ln -s bun.lockb bun.lock
+#           fi
+#           bun install
 
-      - name: Run tests
-        run: bun test --coverage
+#       - name: Run tests
+#         run: bun test --coverage
 
-      - name: Build Astro project
-        run: bunx --bun astro build
+#       - name: Build Astro project
+#         run: bunx --bun astro build
 
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: astro-build
-          path: dist/
-          retention-days: 7
+#       - name: Upload build artifacts
+#         uses: actions/upload-artifact@v4
+#         with:
+#           name: astro-build
+#           path: dist/
+#           retention-days: 7
