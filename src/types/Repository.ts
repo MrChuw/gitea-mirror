@@ -12,6 +12,7 @@ export const repoStatusEnum = z.enum([
   "deleted",
   "syncing",
   "synced",
+  "archived",
 ]);
 
 export type RepoStatus = z.infer<typeof repoStatusEnum>;
@@ -48,6 +49,8 @@ export interface GitRepo {
 
   owner: string;
   organization?: string;
+  mirroredLocation?: string;
+  destinationOrg?: string | null;
 
   isPrivate: boolean;
   isForked: boolean;
@@ -61,6 +64,8 @@ export interface GitRepo {
   hasLFS: boolean;
   hasSubmodules: boolean;
 
+  language?: string | null;
+  description?: string | null;
   defaultBranch: string;
   visibility: RepositoryVisibility;
 
@@ -76,11 +81,12 @@ export interface AddRepositoriesApiRequest {
   userId: string;
   repo: string;
   owner: string;
+  force?: boolean;
 }
 
 export interface AddRepositoriesApiResponse {
   success: boolean;
   message: string;
-  repository: Repository;
+  repository?: Repository;
   error?: string;
 }

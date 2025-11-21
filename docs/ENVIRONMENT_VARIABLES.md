@@ -134,12 +134,17 @@ Control what content gets mirrored from GitHub to Gitea.
 | Variable | Description | Default | Options |
 |----------|-------------|---------|---------|
 | `MIRROR_RELEASES` | Mirror GitHub releases | `false` | `true`, `false` |
+| `RELEASE_LIMIT` | Maximum number of releases to mirror per repository | `10` | Number (1-100) |
 | `MIRROR_WIKI` | Mirror wiki content | `false` | `true`, `false` |
 | `MIRROR_METADATA` | Master toggle for metadata mirroring | `false` | `true`, `false` |
 | `MIRROR_ISSUES` | Mirror issues (requires MIRROR_METADATA=true) | `false` | `true`, `false` |
 | `MIRROR_PULL_REQUESTS` | Mirror pull requests (requires MIRROR_METADATA=true) | `false` | `true`, `false` |
 | `MIRROR_LABELS` | Mirror labels (requires MIRROR_METADATA=true) | `false` | `true`, `false` |
 | `MIRROR_MILESTONES` | Mirror milestones (requires MIRROR_METADATA=true) | `false` | `true`, `false` |
+| `MIRROR_ISSUE_CONCURRENCY` | Number of issues processed in parallel. Set above `1` to speed up mirroring at the risk of out-of-order creation. | `3` | Integer ≥ 1 |
+| `MIRROR_PULL_REQUEST_CONCURRENCY` | Number of pull requests processed in parallel. Values above `1` may cause ordering differences. | `5` | Integer ≥ 1 |
+
+> **Ordering vs Throughput:** Metadata now mirrors sequentially by default to preserve chronology. Increase the concurrency variables only if you can tolerate minor out-of-order entries.
 
 ## Automation Configuration
 
@@ -149,9 +154,28 @@ Configure automatic scheduled mirroring.
 
 | Variable | Description | Default | Options |
 |----------|-------------|---------|---------|
-| `SCHEDULE_ENABLED` | Enable automatic mirroring | `false` | `true`, `false` |
-| `SCHEDULE_INTERVAL` | Interval in seconds or cron expression | `3600` | Number or cron string (e.g., `"0 2 * * *"`) |
+| `SCHEDULE_ENABLED` | Enable automatic mirroring. **When set to `true`, automatically imports and mirrors all repositories on startup** (v3.5.3+) | `false` | `true`, `false` |
+| `SCHEDULE_INTERVAL` | Interval in seconds or cron expression. **Supports cron syntax for scheduled runs** (e.g., `"0 2 * * *"` for 2 AM daily) | `3600` | Number (seconds) or cron string |
 | `DELAY` | Legacy: same as SCHEDULE_INTERVAL | `3600` | Number (seconds) |
+
+> **🚀 Auto-Start Feature (v3.5.3+)**  
+> Setting either `SCHEDULE_ENABLED=true` or `GITEA_MIRROR_INTERVAL` triggers auto-start functionality where the service will:
+> 1. **Import** all GitHub repositories on startup
+> 2. **Mirror** them to Gitea immediately
+> 3. **Continue syncing** at the configured interval
+> 4. **Auto-discover** new repositories
+> 5. **Clean up** deleted repositories (if configured)
+> 
+> This eliminates the need for manual button clicks - perfect for Docker/Kubernetes deployments!
+
+> **⏰ Scheduling with Cron Expressions**  
+> Use cron expressions in `SCHEDULE_INTERVAL` to run at specific times:
+> - `"0 2 * * *"` - Daily at 2 AM
+> - `"0 */6 * * *"` - Every 6 hours
+> - `"0 0 * * 0"` - Weekly on Sunday at midnight
+> - `"0 3 * * 1-5"` - Weekdays at 3 AM (Monday-Friday)
+> 
+> This is useful for optimizing bandwidth usage during low-activity periods.
 
 ### Execution Settings
 
@@ -174,6 +198,8 @@ Configure automatic scheduled mirroring.
 
 | Variable | Description | Default | Options |
 |----------|-------------|---------|---------|
+| `AUTO_IMPORT_REPOS` | Automatically discover and import new GitHub repositories during scheduled syncs | `true` | `true`, `false` |
+| `AUTO_MIRROR_REPOS` | Automatically mirror newly imported repositories during scheduled syncs (no manual “Mirror All” required) | `false` | `true`, `false` |
 | `SCHEDULE_ONLY_MIRROR_UPDATED` | Only mirror repos with updates | `false` | `true`, `false` |
 | `SCHEDULE_UPDATE_INTERVAL` | Check for updates interval (milliseconds) | `86400000` | Number |
 | `SCHEDULE_SKIP_RECENTLY_MIRRORED` | Skip recently mirrored repos | `true` | `true`, `false` |
@@ -206,9 +232,25 @@ Configure automatic cleanup of old events and data.
 |----------|-------------|---------|---------|
 | `CLEANUP_DELETE_FROM_GITEA` | Delete repositories from Gitea | `false` | `true`, `false` |
 | `CLEANUP_DELETE_IF_NOT_IN_GITHUB` | Delete repos not found in GitHub (automatically enables cleanup) | `true` | `true`, `false` |
-| `CLEANUP_ORPHANED_REPO_ACTION` | Action for orphaned repositories | `archive` | `skip`, `archive`, `delete` |
-| `CLEANUP_DRY_RUN` | Test mode without actual deletion | `true` | `true`, `false` |
+| `CLEANUP_ORPHANED_REPO_ACTION` | Action for orphaned repositories. **Note**: `archive` is recommended to preserve backups | `archive` | `skip`, `archive`, `delete` |
+| `CLEANUP_DRY_RUN` | Test mode without actual deletion | `false` | `true`, `false` |
 | `CLEANUP_PROTECTED_REPOS` | Comma-separated list of protected repository names | - | Comma-separated strings |
+
+**🛡️ Safety Features (Backup Protection)**:
+- **GitHub Failures Don't Delete Backups**: Cleanup is automatically skipped if GitHub API returns errors (404, 403, connection issues)
+- **Archive Never Deletes**: The `archive` action ALWAYS preserves repository data, it never deletes
+- **Graceful Degradation**: If marking as archived fails, the repository remains fully accessible in Gitea
+- **The Purpose of Backups**: Your mirrors are preserved even when GitHub sources disappear - that's the whole point!
+
+**Archive Behavior (Aligned with Gitea API)**:
+- **Regular repositories**: Uses Gitea's native archive feature (PATCH `/repos/{owner}/{repo}` with `archived: true`)
+  - Makes repository read-only while preserving all data
+- **Mirror repositories**: Uses rename strategy (Gitea API returns 422 for archiving mirrors)
+  - Renamed with `archived-` prefix for clear identification
+  - Description updated with preservation notice and timestamp
+  - Mirror interval set to 8760h (1 year) to minimize sync attempts
+  - Repository remains fully accessible and cloneable
+- **Manual Sync Option**: Archived mirrors are still available on the Repositories page with automatic syncs disabled—use the `Manual Sync` action to refresh them on demand.
 
 ### Execution Settings
 

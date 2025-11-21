@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { sqliteTable, text, integer, index } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, index, uniqueIndex } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
 import { password } from "bun";
 
@@ -29,7 +29,9 @@ export const githubConfigSchema = z.object({
   starredReposOrg: z.string().optional(),
   mirrorStrategy: z.enum(["preserve", "single-org", "flat-user", "mixed"]).default("preserve"),
   defaultOrg: z.string().optional(),
-  skipStarredIssues: z.boolean().default(false),
+  starredCodeOnly: z.boolean().default(false),
+  skipStarredIssues: z.boolean().optional(), // Deprecated: kept for backward compatibility, use starredCodeOnly instead
+  starredDuplicateStrategy: z.enum(["suffix", "prefix", "owner-org"]).default("suffix").optional(),
 });
 
 export const giteaConfigSchema = z.object({
@@ -54,6 +56,8 @@ export const giteaConfigSchema = z.object({
     .enum(["skip", "reference", "full-copy"])
     .default("reference"),
   // Mirror options
+  issueConcurrency: z.number().int().min(1).default(3),
+  pullRequestConcurrency: z.number().int().min(1).default(5),
   mirrorReleases: z.boolean().default(false),
   releaseLimit: z.number().default(10),
   mirrorMetadata: z.boolean().default(false),
@@ -82,6 +86,8 @@ export const scheduleConfigSchema = z.object({
   updateInterval: z.number().default(86400000),
   skipRecentlyMirrored: z.boolean().default(true),
   recentThreshold: z.number().default(3600000),
+  autoImport: z.boolean().default(true),
+  autoMirror: z.boolean().default(false),
   lastRun: z.coerce.date().optional(),
   nextRun: z.coerce.date().optional(),
 });
@@ -92,7 +98,7 @@ export const cleanupConfigSchema = z.object({
   deleteFromGitea: z.boolean().default(false),
   deleteIfNotInGitHub: z.boolean().default(true),
   protectedRepos: z.array(z.string()).default([]),
-  dryRun: z.boolean().default(true),
+  dryRun: z.boolean().default(false),
   orphanedRepoAction: z
     .enum(["skip", "archive", "delete"])
     .default("archive"),
@@ -123,6 +129,7 @@ export const repositorySchema = z.object({
   configId: z.string(),
   name: z.string(),
   fullName: z.string(),
+  normalizedFullName: z.string(),
   url: z.url(),
   cloneUrl: z.url(),
   owner: z.string(),
@@ -153,11 +160,13 @@ export const repositorySchema = z.object({
       "deleted",
       "syncing",
       "synced",
+      "archived",
     ])
     .default("imported"),
   lastMirrored: z.coerce.date().optional().nullable(),
   errorMessage: z.string().optional().nullable(),
   destinationOrg: z.string().optional().nullable(),
+  metadata: z.string().optional().nullable(), // JSON string for metadata sync state
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
 });
@@ -182,6 +191,7 @@ export const mirrorJobSchema = z.object({
       "deleted",
       "syncing",
       "synced",
+      "archived",
     ])
     .default("imported"),
   message: z.string(),
@@ -203,8 +213,9 @@ export const organizationSchema = z.object({
   userId: z.string(),
   configId: z.string(),
   name: z.string(),
+  normalizedName: z.string(),
   avatarUrl: z.string(),
-  membershipRole: z.enum(["admin", "member", "owner"]).default("member"),
+  membershipRole: z.enum(["member", "admin", "owner", "billing_manager"]).default("member"),
   isIncluded: z.boolean().default(true),
   destinationOrg: z.string().optional().nullable(),
   status: z
@@ -328,6 +339,7 @@ export const repositories = sqliteTable("repositories", {
     .references(() => configs.id),
   name: text("name").notNull(),
   fullName: text("full_name").notNull(),
+  normalizedFullName: text("normalized_full_name").notNull(),
   url: text("url").notNull(),
   cloneUrl: text("clone_url").notNull(),
   owner: text("owner").notNull(),
@@ -367,6 +379,8 @@ export const repositories = sqliteTable("repositories", {
   
   destinationOrg: text("destination_org"),
 
+  metadata: text("metadata"), // JSON string storing metadata sync state (issues, PRs, releases, etc.)
+
   createdAt: integer("created_at", { mode: "timestamp" })
     .notNull()
     .default(sql`(unixepoch())`),
@@ -381,6 +395,8 @@ export const repositories = sqliteTable("repositories", {
   index("idx_repositories_organization").on(table.organization),
   index("idx_repositories_is_fork").on(table.isForked),
   index("idx_repositories_is_starred").on(table.isStarred),
+  uniqueIndex("uniq_repositories_user_full_name").on(table.userId, table.fullName),
+  uniqueIndex("uniq_repositories_user_normalized_full_name").on(table.userId, table.normalizedFullName),
 ]);
 
 export const mirrorJobs = sqliteTable("mirror_jobs", {
@@ -431,6 +447,7 @@ export const organizations = sqliteTable("organizations", {
     .notNull()
     .references(() => configs.id),
   name: text("name").notNull(),
+  normalizedName: text("normalized_name").notNull(),
 
   avatarUrl: text("avatar_url").notNull(),
 
@@ -447,6 +464,9 @@ export const organizations = sqliteTable("organizations", {
   errorMessage: text("error_message"),
 
   repositoryCount: integer("repository_count").notNull().default(0),
+  publicRepositoryCount: integer("public_repository_count"),
+  privateRepositoryCount: integer("private_repository_count"),
+  forkRepositoryCount: integer("fork_repository_count"),
 
   createdAt: integer("created_at", { mode: "timestamp" })
     .notNull()
@@ -459,6 +479,7 @@ export const organizations = sqliteTable("organizations", {
   index("idx_organizations_config_id").on(table.configId),
   index("idx_organizations_status").on(table.status),
   index("idx_organizations_is_included").on(table.isIncluded),
+  uniqueIndex("uniq_organizations_user_normalized_name").on(table.userId, table.normalizedName),
 ]);
 
 // ===== Better Auth Tables =====
@@ -492,6 +513,10 @@ export const accounts = sqliteTable("accounts", {
   providerUserId: text("provider_user_id"), // Make nullable for email/password auth
   accessToken: text("access_token"),
   refreshToken: text("refresh_token"),
+  idToken: text("id_token"),
+  accessTokenExpiresAt: integer("access_token_expires_at", { mode: "timestamp" }),
+  refreshTokenExpiresAt: integer("refresh_token_expires_at", { mode: "timestamp" }),
+  scope: text("scope"),
   expiresAt: integer("expires_at", { mode: "timestamp" }),
   password: text("password"), // For credential provider
   createdAt: integer("created_at", { mode: "timestamp" })
@@ -625,6 +650,47 @@ export const ssoProviders = sqliteTable("sso_providers", {
   index("idx_sso_providers_issuer").on(table.issuer),
 ]);
 
+// ===== Rate Limit Tracking =====
+
+export const rateLimitSchema = z.object({
+  id: z.string(),
+  userId: z.string(),
+  provider: z.enum(["github", "gitea"]).default("github"),
+  limit: z.number(),
+  remaining: z.number(),
+  used: z.number(),
+  reset: z.coerce.date(),
+  retryAfter: z.number().optional(), // seconds to wait
+  status: z.enum(["ok", "warning", "limited", "exceeded"]).default("ok"),
+  lastChecked: z.coerce.date(),
+  createdAt: z.coerce.date(),
+  updatedAt: z.coerce.date(),
+});
+
+export const rateLimits = sqliteTable("rate_limits", {
+  id: text("id").primaryKey(),
+  userId: text("user_id")
+    .notNull()
+    .references(() => users.id),
+  provider: text("provider").notNull().default("github"),
+  limit: integer("limit").notNull(),
+  remaining: integer("remaining").notNull(),
+  used: integer("used").notNull(),
+  reset: integer("reset", { mode: "timestamp" }).notNull(),
+  retryAfter: integer("retry_after"), // seconds to wait
+  status: text("status").notNull().default("ok"),
+  lastChecked: integer("last_checked", { mode: "timestamp" }).notNull(),
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .default(sql`(unixepoch())`),
+  updatedAt: integer("updated_at", { mode: "timestamp" })
+    .notNull()
+    .default(sql`(unixepoch())`),
+}, (table) => [
+  index("idx_rate_limits_user_provider").on(table.userId, table.provider),
+  index("idx_rate_limits_status").on(table.status),
+]);
+
 // Export type definitions
 export type User = z.infer<typeof userSchema>;
 export type Config = z.infer<typeof configSchema>;
@@ -632,3 +698,4 @@ export type Repository = z.infer<typeof repositorySchema>;
 export type MirrorJob = z.infer<typeof mirrorJobSchema>;
 export type Organization = z.infer<typeof organizationSchema>;
 export type Event = z.infer<typeof eventSchema>;
+export type RateLimit = z.infer<typeof rateLimitSchema>;

@@ -21,7 +21,7 @@ interface EnvConfig {
     mirrorOrganizations?: boolean;
     preserveOrgStructure?: boolean;
     onlyMirrorOrgs?: boolean;
-    skipStarredIssues?: boolean;
+    starredCodeOnly?: boolean;
     starredReposOrg?: string;
     mirrorStrategy?: 'preserve' | 'single-org' | 'flat-user' | 'mixed';
   };
@@ -49,6 +49,9 @@ interface EnvConfig {
     mirrorLabels?: boolean;
     mirrorMilestones?: boolean;
     mirrorMetadata?: boolean;
+    releaseLimit?: number;
+    issueConcurrency?: number;
+    pullRequestConcurrency?: number;
   };
   schedule: {
     enabled?: boolean;
@@ -69,6 +72,8 @@ interface EnvConfig {
     updateInterval?: number;
     skipRecentlyMirrored?: boolean;
     recentThreshold?: number;
+    autoImport?: boolean;
+    autoMirror?: boolean;
   };
   cleanup: {
     enabled?: boolean;
@@ -105,7 +110,7 @@ function parseEnvConfig(): EnvConfig {
       mirrorOrganizations: process.env.MIRROR_ORGANIZATIONS === 'true',
       preserveOrgStructure: process.env.PRESERVE_ORG_STRUCTURE === 'true',
       onlyMirrorOrgs: process.env.ONLY_MIRROR_ORGS === 'true',
-      skipStarredIssues: process.env.SKIP_STARRED_ISSUES === 'true',
+      starredCodeOnly: process.env.SKIP_STARRED_ISSUES === 'true',
       starredReposOrg: process.env.STARRED_REPOS_ORG,
       mirrorStrategy: process.env.MIRROR_STRATEGY as 'preserve' | 'single-org' | 'flat-user' | 'mixed',
     },
@@ -133,6 +138,9 @@ function parseEnvConfig(): EnvConfig {
       mirrorLabels: process.env.MIRROR_LABELS === 'true',
       mirrorMilestones: process.env.MIRROR_MILESTONES === 'true',
       mirrorMetadata: process.env.MIRROR_METADATA === 'true',
+      releaseLimit: process.env.RELEASE_LIMIT ? parseInt(process.env.RELEASE_LIMIT, 10) : undefined,
+      issueConcurrency: process.env.MIRROR_ISSUE_CONCURRENCY ? parseInt(process.env.MIRROR_ISSUE_CONCURRENCY, 10) : undefined,
+      pullRequestConcurrency: process.env.MIRROR_PULL_REQUEST_CONCURRENCY ? parseInt(process.env.MIRROR_PULL_REQUEST_CONCURRENCY, 10) : undefined,
     },
     schedule: {
       enabled: process.env.SCHEDULE_ENABLED === 'true' || 
@@ -156,6 +164,8 @@ function parseEnvConfig(): EnvConfig {
       updateInterval: process.env.SCHEDULE_UPDATE_INTERVAL ? parseInt(process.env.SCHEDULE_UPDATE_INTERVAL, 10) : undefined,
       skipRecentlyMirrored: process.env.SCHEDULE_SKIP_RECENTLY_MIRRORED === 'true',
       recentThreshold: process.env.SCHEDULE_RECENT_THRESHOLD ? parseInt(process.env.SCHEDULE_RECENT_THRESHOLD, 10) : undefined,
+      autoImport: process.env.AUTO_IMPORT_REPOS !== 'false',
+      autoMirror: process.env.AUTO_MIRROR_REPOS === 'true',
     },
     cleanup: {
       enabled: process.env.CLEANUP_ENABLED === 'true' || 
@@ -164,7 +174,7 @@ function parseEnvConfig(): EnvConfig {
       deleteFromGitea: process.env.CLEANUP_DELETE_FROM_GITEA === 'true',
       deleteIfNotInGitHub: process.env.CLEANUP_DELETE_IF_NOT_IN_GITHUB === 'true',
       protectedRepos,
-      dryRun: process.env.CLEANUP_DRY_RUN === 'true',
+      dryRun: process.env.CLEANUP_DRY_RUN === 'true' ? true : process.env.CLEANUP_DRY_RUN === 'false' ? false : false,
       orphanedRepoAction: process.env.CLEANUP_ORPHANED_REPO_ACTION as 'skip' | 'archive' | 'delete',
       batchSize: process.env.CLEANUP_BATCH_SIZE ? parseInt(process.env.CLEANUP_BATCH_SIZE, 10) : undefined,
       pauseBetweenDeletes: process.env.CLEANUP_PAUSE_BETWEEN_DELETES ? parseInt(process.env.CLEANUP_PAUSE_BETWEEN_DELETES, 10) : undefined,
@@ -248,7 +258,7 @@ export async function initializeConfigFromEnv(): Promise<void> {
       starredReposOrg: envConfig.github.starredReposOrg || existingConfig?.[0]?.githubConfig?.starredReposOrg || 'starred',
       mirrorStrategy,
       defaultOrg: envConfig.gitea.organization || existingConfig?.[0]?.githubConfig?.defaultOrg || 'github-mirrors',
-      skipStarredIssues: envConfig.github.skipStarredIssues ?? existingConfig?.[0]?.githubConfig?.skipStarredIssues ?? false,
+      starredCodeOnly: envConfig.github.starredCodeOnly ?? existingConfig?.[0]?.githubConfig?.starredCodeOnly ?? false,
     };
 
     // Build Gitea config
@@ -271,6 +281,13 @@ export async function initializeConfigFromEnv(): Promise<void> {
       forkStrategy: envConfig.gitea.forkStrategy || existingConfig?.[0]?.giteaConfig?.forkStrategy || 'reference',
       // Mirror metadata options
       mirrorReleases: envConfig.mirror.mirrorReleases ?? existingConfig?.[0]?.giteaConfig?.mirrorReleases ?? false,
+      releaseLimit: envConfig.mirror.releaseLimit ?? existingConfig?.[0]?.giteaConfig?.releaseLimit ?? 10,
+      issueConcurrency: envConfig.mirror.issueConcurrency && envConfig.mirror.issueConcurrency > 0
+        ? envConfig.mirror.issueConcurrency
+        : existingConfig?.[0]?.giteaConfig?.issueConcurrency ?? 3,
+      pullRequestConcurrency: envConfig.mirror.pullRequestConcurrency && envConfig.mirror.pullRequestConcurrency > 0
+        ? envConfig.mirror.pullRequestConcurrency
+        : existingConfig?.[0]?.giteaConfig?.pullRequestConcurrency ?? 5,
       mirrorMetadata: envConfig.mirror.mirrorMetadata ?? (envConfig.mirror.mirrorIssues || envConfig.mirror.mirrorPullRequests || envConfig.mirror.mirrorLabels || envConfig.mirror.mirrorMilestones) ?? existingConfig?.[0]?.giteaConfig?.mirrorMetadata ?? false,
       mirrorIssues: envConfig.mirror.mirrorIssues ?? existingConfig?.[0]?.giteaConfig?.mirrorIssues ?? false,
       mirrorPullRequests: envConfig.mirror.mirrorPullRequests ?? existingConfig?.[0]?.giteaConfig?.mirrorPullRequests ?? false,
@@ -299,7 +316,8 @@ export async function initializeConfigFromEnv(): Promise<void> {
       updateInterval: envConfig.schedule.updateInterval ?? existingConfig?.[0]?.scheduleConfig?.updateInterval ?? 86400000,
       skipRecentlyMirrored: envConfig.schedule.skipRecentlyMirrored ?? existingConfig?.[0]?.scheduleConfig?.skipRecentlyMirrored ?? true,
       recentThreshold: envConfig.schedule.recentThreshold ?? existingConfig?.[0]?.scheduleConfig?.recentThreshold ?? 3600000,
-      autoImport: process.env.AUTO_IMPORT_REPOS !== 'false', // New field for auto-importing new repositories
+      autoImport: envConfig.schedule.autoImport ?? existingConfig?.[0]?.scheduleConfig?.autoImport ?? true,
+      autoMirror: envConfig.schedule.autoMirror ?? existingConfig?.[0]?.scheduleConfig?.autoMirror ?? false,
       lastRun: existingConfig?.[0]?.scheduleConfig?.lastRun || undefined,
       nextRun: existingConfig?.[0]?.scheduleConfig?.nextRun || undefined,
     };

@@ -15,11 +15,11 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { 
-  Info, 
-  GitBranch, 
-  Star, 
-  Lock, 
+import {
+  Info,
+  GitBranch,
+  Star,
+  Lock,
   Archive,
   GitPullRequest,
   Tag,
@@ -30,9 +30,17 @@ import {
   GitFork,
   ChevronDown,
   Funnel,
-  HardDrive
+  HardDrive,
+  FileCode2
 } from "lucide-react";
-import type { GitHubConfig, MirrorOptions, AdvancedOptions } from "@/types/config";
+import type { GitHubConfig, MirrorOptions, AdvancedOptions, DuplicateNameStrategy } from "@/types/config";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 
 interface GitHubMirrorSettingsProps {
@@ -53,7 +61,7 @@ export function GitHubMirrorSettings({
   onAdvancedOptionsChange,
 }: GitHubMirrorSettingsProps) {
   
-  const handleGitHubChange = (field: keyof GitHubConfig, value: boolean) => {
+  const handleGitHubChange = (field: keyof GitHubConfig, value: boolean | string) => {
     onGitHubConfigChange({ ...githubConfig, [field]: value });
   };
 
@@ -81,10 +89,10 @@ export function GitHubMirrorSettings({
   // Calculate what content is included for starred repos
   const starredRepoContent = {
     code: true, // Always included
-    releases: !advancedOptions.skipStarredIssues && mirrorOptions.mirrorReleases,
-    issues: !advancedOptions.skipStarredIssues && mirrorOptions.mirrorMetadata && mirrorOptions.metadataComponents.issues,
-    pullRequests: !advancedOptions.skipStarredIssues && mirrorOptions.mirrorMetadata && mirrorOptions.metadataComponents.pullRequests,
-    wiki: !advancedOptions.skipStarredIssues && mirrorOptions.mirrorMetadata && mirrorOptions.metadataComponents.wiki,
+    releases: !advancedOptions.starredCodeOnly && mirrorOptions.mirrorReleases,
+    issues: !advancedOptions.starredCodeOnly && mirrorOptions.mirrorMetadata && mirrorOptions.metadataComponents.issues,
+    pullRequests: !advancedOptions.starredCodeOnly && mirrorOptions.mirrorMetadata && mirrorOptions.metadataComponents.pullRequests,
+    wiki: !advancedOptions.starredCodeOnly && mirrorOptions.mirrorMetadata && mirrorOptions.metadataComponents.wiki,
   };
   
   const starredContentCount = Object.entries(starredRepoContent).filter(([key, value]) => key !== 'code' && value).length;
@@ -160,7 +168,7 @@ export function GitHubMirrorSettings({
                     className="h-8 text-xs font-normal min-w-[140px] md:min-w-[140px] justify-between"
                   >
                     <span>
-                      {advancedOptions.skipStarredIssues ? (
+                      {advancedOptions.starredCodeOnly ? (
                         "Code only"
                       ) : starredContentCount === 0 ? (
                         "Code only"
@@ -198,8 +206,8 @@ export function GitHubMirrorSettings({
                       <div className="flex items-center space-x-3 py-1 px-1 rounded hover:bg-accent">
                         <Checkbox
                           id="starred-lightweight"
-                          checked={advancedOptions.skipStarredIssues}
-                          onCheckedChange={(checked) => handleAdvancedChange('skipStarredIssues', !!checked)}
+                          checked={advancedOptions.starredCodeOnly}
+                          onCheckedChange={(checked) => handleAdvancedChange('starredCodeOnly', !!checked)}
                         />
                         <Label
                           htmlFor="starred-lightweight"
@@ -214,7 +222,7 @@ export function GitHubMirrorSettings({
                         </Label>
                       </div>
                       
-                      {!advancedOptions.skipStarredIssues && (
+                      {!advancedOptions.starredCodeOnly && (
                         <>
                           <Separator className="my-2" />
                           <div className="space-y-2">
@@ -278,6 +286,40 @@ export function GitHubMirrorSettings({
               </Popover>
             </div>
           </div>
+
+          {/* Duplicate name handling for starred repos */}
+          {githubConfig.mirrorStarred && (
+            <div className="mt-4 space-y-2">
+              <Label className="text-xs font-medium text-muted-foreground">
+                Duplicate name handling
+              </Label>
+              <div className="flex items-center gap-3">
+                <FileCode2 className="h-4 w-4 text-muted-foreground" />
+                <div className="flex-1">
+                  <p className="text-sm">Name collision strategy</p>
+                  <p className="text-xs text-muted-foreground">
+                    How to handle repos with the same name from different owners
+                  </p>
+                </div>
+                <Select
+                  value={githubConfig.starredDuplicateStrategy || "suffix"}
+                  onValueChange={(value) => handleGitHubChange('starredDuplicateStrategy', value as DuplicateNameStrategy)}
+                >
+                  <SelectTrigger className="w-[180px] h-8 text-xs">
+                    <SelectValue placeholder="Select strategy" />
+                  </SelectTrigger>
+                  <SelectContent align="end">
+                    <SelectItem value="suffix" className="text-xs">
+                      <span className="font-mono">repo-owner</span>
+                    </SelectItem>
+                    <SelectItem value="prefix" className="text-xs">
+                      <span className="font-mono">owner-repo</span>
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

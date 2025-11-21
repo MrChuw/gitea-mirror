@@ -2,6 +2,10 @@ import type { APIContext } from "astro";
 import { createSecureErrorResponse } from "@/lib/utils";
 import { requireAuth } from "@/lib/utils/auth-helpers";
 import { auth } from "@/lib/auth";
+import { db, ssoProviders } from "@/lib/db";
+import { eq } from "drizzle-orm";
+import { nanoid } from "nanoid";
+import { normalizeOidcProviderConfig, OidcConfigError } from "@/lib/sso/oidc-config";
 
 // POST /api/auth/sso/register - Register a new SSO provider using Better Auth
 export async function POST(context: APIContext) {
@@ -25,9 +29,35 @@ export async function POST(context: APIContext) {
       );
     }
 
+    // Validate issuer URL format while preserving trailing slash when provided
+    let validatedIssuer = issuer;
+    if (issuer && typeof issuer === 'string' && issuer.trim() !== '') {
+      try {
+        const trimmedIssuer = issuer.trim();
+        new URL(trimmedIssuer);
+        validatedIssuer = trimmedIssuer;
+      } catch (e) {
+        return new Response(
+          JSON.stringify({ error: `Invalid issuer URL format: ${issuer}` }),
+          {
+            status: 400,
+            headers: { "Content-Type": "application/json" },
+          }
+        );
+      }
+    } else {
+      return new Response(
+        JSON.stringify({ error: "Issuer URL cannot be empty" }),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        }
+      );
+    }
+
     let registrationBody: any = {
       providerId,
-      issuer,
+      issuer: validatedIssuer,
       domain,
       organizationId,
     };
@@ -79,30 +109,37 @@ export async function POST(context: APIContext) {
         userInfoEndpoint,
         scopes,
         pkce = true,
-        mapping = {
-          id: "sub",
-          email: "email",
-          emailVerified: "email_verified",
-          name: "name",
-          image: "picture",
-        }
+        mapping,
       } = body;
 
-      // Use provided scopes or default if not specified
-      const finalScopes = scopes || ["openid", "email", "profile"];
+      try {
+        const normalized = await normalizeOidcProviderConfig(validatedIssuer, {
+          clientId,
+          clientSecret,
+          authorizationEndpoint,
+          tokenEndpoint,
+          jwksEndpoint,
+          userInfoEndpoint,
+          discoveryEndpoint,
+          scopes,
+          pkce,
+          mapping,
+        });
 
-      registrationBody.oidcConfig = {
-        clientId,
-        clientSecret,
-        authorizationEndpoint,
-        tokenEndpoint,
-        jwksEndpoint,
-        discoveryEndpoint,
-        userInfoEndpoint,
-        scopes: finalScopes,
-        pkce,
-      };
-      registrationBody.mapping = mapping;
+        registrationBody.oidcConfig = normalized.oidcConfig;
+        registrationBody.mapping = normalized.mapping;
+      } catch (error) {
+        if (error instanceof OidcConfigError) {
+          return new Response(
+            JSON.stringify({ error: error.message }),
+            {
+              status: 400,
+              headers: { "Content-Type": "application/json" },
+            }
+          );
+        }
+        throw error;
+      }
     }
 
     // Get the user's auth headers to make the request
@@ -130,7 +167,52 @@ export async function POST(context: APIContext) {
     }
 
     const result = await response.json();
-    
+
+    // Mirror provider entry into local SSO table for UI listing
+    try {
+      const existing = await db
+        .select()
+        .from(ssoProviders)
+        .where(eq(ssoProviders.providerId, registrationBody.providerId))
+        .limit(1);
+
+      const values: any = {
+        issuer: registrationBody.issuer,
+        domain: registrationBody.domain,
+        organizationId: registrationBody.organizationId,
+        updatedAt: new Date(),
+      };
+
+      if (registrationBody.oidcConfig) {
+        values.oidcConfig = JSON.stringify({
+          ...registrationBody.oidcConfig,
+          mapping: registrationBody.mapping,
+        });
+      }
+
+      if (existing.length > 0) {
+        await db
+          .update(ssoProviders)
+          .set(values)
+          .where(eq(ssoProviders.id, existing[0].id));
+      } else {
+        await db.insert(ssoProviders).values({
+          id: nanoid(),
+          issuer: registrationBody.issuer,
+          domain: registrationBody.domain,
+          oidcConfig: JSON.stringify({
+            ...registrationBody.oidcConfig,
+            mapping: registrationBody.mapping,
+          }),
+          userId: user.id,
+          providerId: registrationBody.providerId,
+          organizationId: registrationBody.organizationId,
+        });
+      }
+    } catch (mirroringError) {
+      console.warn("Failed to mirror SSO provider to local DB:", mirroringError);
+    }
+
     return new Response(JSON.stringify(result), {
       status: 201,
       headers: { "Content-Type": "application/json" },

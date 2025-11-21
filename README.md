@@ -10,10 +10,6 @@
   </p>
 </p>
 
-> [!IMPORTANT]
-> **Upgrading to v3?** v3 requires a fresh start with a new data volume. Please read the [Upgrade Guide](UPGRADE.md) for instructions.
-
-
 ## 🚀 Quick Start
 
 ```bash
@@ -216,30 +212,54 @@ Gitea Mirror provides powerful automatic synchronization features:
 - **Repository cleanup**: Removes repositories that no longer exist in GitHub
 - **Proper intervals**: Mirrors respect your configured sync intervals (not Gitea's default 24h)
 - **Smart scheduling**: Only syncs repositories that need updating
+- **Auto-start on boot** (v3.5.3+): Automatically imports and mirrors all repositories when `SCHEDULE_ENABLED=true` or `GITEA_MIRROR_INTERVAL` is set - no manual clicks required!
 
 #### Configuration via Web Interface (Recommended)
 Navigate to the Configuration page and enable "Automatic Syncing" with your preferred interval.
 
 #### Configuration via Environment Variables
 
-```bash
-# Enable automatic scheduling (required for auto features)
-SCHEDULE_ENABLED=true
+**🚀 Set it and forget it!** With these environment variables, Gitea Mirror will automatically:
+1. **Import** all your GitHub repositories on startup (no manual import needed!)
+2. **Mirror** them to Gitea immediately  
+3. **Keep them synchronized** based on your interval
+4. **Auto-discover** new repos you create/star on GitHub
+5. **Clean up** repos you delete from GitHub
 
-# Mirror interval (how often to sync)
-GITEA_MIRROR_INTERVAL=8h     # Every 8 hours (default)
+```bash
+# Option 1: Enable automatic scheduling (triggers auto-start)
+SCHEDULE_ENABLED=true
+SCHEDULE_INTERVAL=3600        # Check every hour (or use cron: "0 * * * *")
+
+# Option 2: Set mirror interval (also triggers auto-start)
+GITEA_MIRROR_INTERVAL=8h     # Every 8 hours
 # Other examples: 5m, 30m, 1h, 24h, 1d, 7d
+
+# Advanced: Use cron expressions for specific times
+SCHEDULE_INTERVAL="0 2 * * *"  # Daily at 2 AM (optimize bandwidth usage)
 
 # Auto-import new repositories (default: true)
 AUTO_IMPORT_REPOS=true
 
 # Auto-cleanup orphaned repositories
 CLEANUP_DELETE_IF_NOT_IN_GITHUB=true
-CLEANUP_ORPHANED_REPO_ACTION=archive  # or 'delete'
+CLEANUP_ORPHANED_REPO_ACTION=archive  # 'archive' (recommended) or 'delete'
 CLEANUP_DRY_RUN=false                 # Set to true to test without changes
 ```
 
-**Important**: The scheduler checks every minute for tasks to run. The `GITEA_MIRROR_INTERVAL` determines how often each repository is actually synced. For example, with `8h`, each repo syncs every 8 hours from its last successful sync.
+**Important Notes**:
+- **Auto-Start**: When `SCHEDULE_ENABLED=true` or `GITEA_MIRROR_INTERVAL` is set, the service automatically imports all GitHub repositories and mirrors them on startup. No manual "Import" or "Mirror" button clicks required!
+- The scheduler checks every minute for tasks to run. The `GITEA_MIRROR_INTERVAL` determines how often each repository is actually synced. For example, with `8h`, each repo syncs every 8 hours from its last successful sync.
+
+**🛡️ Backup Protection Features**:
+- **No Accidental Deletions**: Repository cleanup is automatically skipped if GitHub is inaccessible (account deleted, banned, or API errors)
+- **Archive Never Deletes Data**: The `archive` action preserves all repository data:
+  - Regular repositories: Made read-only using Gitea's archive feature
+  - Mirror repositories: Renamed with `archived-` prefix (Gitea API limitation prevents archiving mirrors)
+  - Failed operations: Repository remains fully accessible even if marking as archived fails
+- **Manual Sync on Demand**: Archived mirrors stay in Gitea with automatic syncs disabled; trigger `Manual Sync` from the Repositories page whenever you need fresh data.
+- **The Whole Point of Backups**: Your Gitea mirrors are preserved even when GitHub sources disappear - that's why you have backups!
+- **Strongly Recommended**: Always use `CLEANUP_ORPHANED_REPO_ACTION=archive` (default) instead of `delete`
 
 ## Troubleshooting
 
@@ -305,6 +325,8 @@ Enable users to sign in with external identity providers like Google, Azure AD, 
 ```
 https://your-domain.com/api/auth/sso/callback/{provider-id}
 ```
+
+Need help? The [SSO & OIDC guide](docs/SSO-OIDC-SETUP.md) now includes a working Authentik walkthrough plus troubleshooting tips. If you upgraded from a version earlier than v3.8.10 and see `TypeError … url.startsWith` after the callback, delete the old provider and add it again using the Discover button (see [#73](https://github.com/RayLabsHQ/gitea-mirror/issues/73) and [#122](https://github.com/RayLabsHQ/gitea-mirror/issues/122)).
 
 ### 3. Header Authentication (Reverse Proxy)
 Perfect for automatic authentication when using reverse proxies like Authentik, Authelia, or Traefik Forward Auth.
@@ -383,11 +405,11 @@ GNU General Public License v3.0 - see [LICENSE](LICENSE) file for details.
 
 ## Star History
 
-<a href="https://www.star-history.com/#RayLabsHQ/gitea-mirror&Date">
+<a href="https://www.star-history.com/#RayLabsHQ/gitea-mirror&type=date&legend=bottom-right">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=RayLabsHQ/gitea-mirror&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=RayLabsHQ/gitea-mirror&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=RayLabsHQ/gitea-mirror&type=Date" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=RayLabsHQ/gitea-mirror&type=date&theme=dark&legend=bottom-right" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=RayLabsHQ/gitea-mirror&type=date&legend=bottom-right" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=RayLabsHQ/gitea-mirror&type=date&legend=bottom-right" />
  </picture>
 </a>
 

@@ -7,7 +7,7 @@
 import { db, configs, repositories } from '@/lib/db';
 import { eq, and, or, sql, not, inArray } from 'drizzle-orm';
 import { createGitHubClient, getGithubRepositories, getGithubStarredRepositories } from '@/lib/github';
-import { createGiteaClient, deleteGiteaRepo, archiveGiteaRepo } from '@/lib/gitea';
+import { createGiteaClient, deleteGiteaRepo, archiveGiteaRepo, getGiteaRepoOwnerAsync, checkRepoLocation } from '@/lib/gitea';
 import { getDecryptedGitHubToken, getDecryptedGiteaToken } from '@/lib/utils/config-encryption';
 import { publishEvent } from '@/lib/events';
 
@@ -23,19 +23,42 @@ async function identifyOrphanedRepositories(config: any): Promise<any[]> {
   const userId = config.userId;
   
   try {
-    // Get current GitHub repositories
+    // Get current GitHub repositories with rate limit tracking
     const decryptedToken = getDecryptedGitHubToken(config);
-    const octokit = createGitHubClient(decryptedToken);
+    const githubUsername = config.githubConfig?.owner || undefined;
+    const octokit = createGitHubClient(decryptedToken, userId, githubUsername);
     
-    // Fetch GitHub data
-    const [basicAndForkedRepos, starredRepos] = await Promise.all([
-      getGithubRepositories({ octokit, config }),
-      config.githubConfig?.includeStarred
-        ? getGithubStarredRepositories({ octokit, config })
-        : Promise.resolve([]),
-    ]);
+    let allGithubRepos = [];
+    let githubApiAccessible = true;
     
-    const allGithubRepos = [...basicAndForkedRepos, ...starredRepos];
+    try {
+      // Fetch GitHub data
+      const [basicAndForkedRepos, starredRepos] = await Promise.all([
+        getGithubRepositories({ octokit, config }),
+        config.githubConfig?.includeStarred
+          ? getGithubStarredRepositories({ octokit, config })
+          : Promise.resolve([]),
+      ]);
+      
+      allGithubRepos = [...basicAndForkedRepos, ...starredRepos];
+    } catch (githubError: any) {
+      // Handle GitHub API errors gracefully
+      console.warn(`[Repository Cleanup] GitHub API error for user ${userId}: ${githubError.message}`);
+      
+      // Check if it's a critical error (like account deleted/banned)
+      if (githubError.status === 404 || githubError.status === 403) {
+        console.error(`[Repository Cleanup] CRITICAL: GitHub account may be deleted/banned. Skipping cleanup to prevent data loss.`);
+        console.error(`[Repository Cleanup] Consider using CLEANUP_ORPHANED_REPO_ACTION=archive instead of delete for safety.`);
+        
+        // Return empty array to skip cleanup entirely when GitHub account is inaccessible
+        return [];
+      }
+      
+      // For other errors, also skip cleanup to be safe
+      console.error(`[Repository Cleanup] Skipping cleanup due to GitHub API error. This prevents accidental deletion of backups.`);
+      return [];
+    }
+    
     const githubRepoFullNames = new Set(allGithubRepos.map(repo => repo.fullName));
     
     // Get all repositories from our database
@@ -44,13 +67,32 @@ async function identifyOrphanedRepositories(config: any): Promise<any[]> {
       .from(repositories)
       .where(eq(repositories.userId, userId));
     
-    // Identify orphaned repositories
-    const orphanedRepos = dbRepos.filter(repo => !githubRepoFullNames.has(repo.fullName));
+    // Only identify repositories as orphaned if we successfully accessed GitHub
+    // This prevents false positives when GitHub is down or account is inaccessible
+    const orphanedRepos = dbRepos.filter(repo => {
+      const isOrphaned = !githubRepoFullNames.has(repo.fullName);
+      if (!isOrphaned) {
+        return false;
+      }
+
+      // Skip repositories we've already archived/preserved
+      if (repo.status === 'archived' || repo.isArchived) {
+        console.log(`[Repository Cleanup] Skipping ${repo.fullName} - already archived`);
+        return false;
+      }
+
+      return true;
+    });
+    
+    if (orphanedRepos.length > 0) {
+      console.log(`[Repository Cleanup] Found ${orphanedRepos.length} orphaned repositories for user ${userId}`);
+    }
     
     return orphanedRepos;
   } catch (error) {
     console.error(`[Repository Cleanup] Error identifying orphaned repositories for user ${userId}:`, error);
-    throw error;
+    // Return empty array on error to prevent accidental deletions
+    return [];
   }
 }
 
@@ -69,7 +111,12 @@ async function handleOrphanedRepository(
     console.log(`[Repository Cleanup] Skipping orphaned repository ${repoFullName}`);
     return;
   }
-  
+
+  if (repo.status === 'archived' || repo.isArchived) {
+    console.log(`[Repository Cleanup] Repository ${repoFullName} already archived; skipping additional actions`);
+    return;
+  }
+
   if (dryRun) {
     console.log(`[Repository Cleanup] DRY RUN: Would ${action} orphaned repository ${repoFullName}`);
     return;
@@ -80,26 +127,46 @@ async function handleOrphanedRepository(
     const giteaToken = getDecryptedGiteaToken(config);
     const giteaClient = createGiteaClient(config.giteaConfig.url, giteaToken);
     
-    // Determine the Gitea owner and repo name
-    const mirroredLocation = repo.mirroredLocation || '';
-    let giteaOwner = repo.owner;
-    let giteaRepoName = repo.name;
-    
-    if (mirroredLocation) {
-      const parts = mirroredLocation.split('/');
-      if (parts.length >= 2) {
-        giteaOwner = parts[parts.length - 2];
-        giteaRepoName = parts[parts.length - 1];
-      }
+    // Determine the Gitea owner and repo name more robustly
+    const mirroredLocation = (repo.mirroredLocation || '').trim();
+    let giteaOwner: string;
+    let giteaRepoName: string;
+
+    if (mirroredLocation && mirroredLocation.includes('/')) {
+      const [ownerPart, namePart] = mirroredLocation.split('/');
+      giteaOwner = ownerPart;
+      giteaRepoName = namePart;
+    } else {
+      // Fall back to expected owner based on config and repo flags (starred/org overrides)
+      giteaOwner = await getGiteaRepoOwnerAsync({ config, repository: repo });
+      giteaRepoName = repo.name;
     }
+
+    // Normalize owner casing to avoid GetUserByName issues on some Gitea setups
+    giteaOwner = giteaOwner.trim();
     
     if (action === 'archive') {
       console.log(`[Repository Cleanup] Archiving orphaned repository ${repoFullName} in Gitea`);
+      // Best-effort check to validate actual location; falls back gracefully
+      try {
+        const { present, actualOwner } = await checkRepoLocation({
+          config,
+          repository: repo,
+          expectedOwner: giteaOwner,
+        });
+        if (present) {
+          giteaOwner = actualOwner;
+        }
+      } catch {
+        // Non-fatal; continue with best guess
+      }
+
       await archiveGiteaRepo(giteaClient, giteaOwner, giteaRepoName);
       
       // Update database status
       await db.update(repositories).set({
         status: 'archived',
+        isArchived: true,
         errorMessage: 'Repository archived - no longer in GitHub',
         updatedAt: new Date(),
       }).where(eq(repositories.id, repo.id));
@@ -211,7 +278,7 @@ async function runRepositoryCleanup(config: any): Promise<{
     
     // Process orphaned repositories
     const action = cleanupConfig.orphanedRepoAction || 'archive';
-    const dryRun = cleanupConfig.dryRun ?? true;
+    const dryRun = cleanupConfig.dryRun ?? false;
     const batchSize = cleanupConfig.batchSize || 10;
     const pauseBetweenDeletes = cleanupConfig.pauseBetweenDeletes || 2000;
     

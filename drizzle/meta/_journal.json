@@ -22,6 +22,48 @@
       "when": 1753539600567,
       "tag": "0002_bored_captain_cross",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1757390828679,
+      "tag": "0003_open_spacker_dave",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1757392620734,
+      "tag": "0004_grey_butterfly",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1757786449446,
+      "tag": "0005_polite_preak",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1761483928546,
+      "tag": "0006_military_la_nuit",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1761534391115,
+      "tag": "0007_whole_hellion",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1761802056073,
+      "tag": "0008_serious_thena",
+      "breakpoints": true
     }
   ]
 }

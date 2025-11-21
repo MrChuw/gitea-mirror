@@ -13,6 +13,8 @@ export interface GiteaConfig {
   preserveOrgStructure: boolean;
   mirrorStrategy?: MirrorStrategy; // New field for the strategy
   personalReposOrg?: string; // Override destination for personal repos
+  issueConcurrency?: number;
+  pullRequestConcurrency?: number;
 }
 
 export interface ScheduleConfig {
@@ -25,9 +27,18 @@ export interface ScheduleConfig {
 export interface DatabaseCleanupConfig {
   enabled: boolean;
   retentionDays: number; // Actually stores seconds, but keeping the name for compatibility
+  deleteIfNotInGitHub: boolean;
+  orphanedRepoAction: "skip" | "archive" | "delete";
+  dryRun: boolean;
+  deleteFromGitea?: boolean;
+  protectedRepos?: string[];
+  batchSize?: number;
+  pauseBetweenDeletes?: number;
   lastRun?: Date;
   nextRun?: Date;
 }
+
+export type DuplicateNameStrategy = "suffix" | "prefix" | "owner-org";
 
 export interface GitHubConfig {
   username: string;
@@ -35,6 +46,7 @@ export interface GitHubConfig {
   token: string;
   privateRepositories: boolean;
   mirrorStarred: boolean;
+  starredDuplicateStrategy?: DuplicateNameStrategy;
 }
 
 export interface MirrorOptions {
@@ -53,7 +65,7 @@ export interface MirrorOptions {
 
 export interface AdvancedOptions {
   skipForks: boolean;
-  skipStarredIssues: boolean;
+  starredCodeOnly: boolean;
 }
 
 export interface SaveConfigApiRequest {
