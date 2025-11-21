@@ -77,6 +77,10 @@ export const getGiteaRepoOwnerAsync = async ({
     return repository.organization || repository.owner;
   }
 
+  if (repository.isPrivate) {
+    return repository.owner;
+  }
+
   // Check for repository-specific override (second highest priority)
   if (repository.destinationOrg) {
     console.log(`Using repository override: ${repository.fullName} -> ${repository.destinationOrg}`);
@@ -120,6 +124,10 @@ export const getGiteaRepoOwner = ({
   // Check if repository is starred - starred repos always go to starredReposOrg.
   if (repository.isStarred) {
     return repository.organization || repository.owner;
+  }
+
+  if (repository.owner.toLowerCase() === config.githubConfig.owner) {
+    return config.githubConfig.owner
   }
 
   // Get the mirror strategy - use preserveOrgStructure for backward compatibility
@@ -342,12 +350,7 @@ export const mirrorGithubRepoToGitea = async ({
         throw new Error(
           "GitHub token is required to mirror private repositories."
         );
-      }
-
-      cloneAddress = repository.cloneUrl.replace(
-        "https://",
-        `https://${decryptedConfig.githubConfig.token}@`
-      );
+      };
     }
 
     const apiUrl = `${config.giteaConfig.url}/api/v1/repos/migrate`;
@@ -420,10 +423,14 @@ export const mirrorGithubRepoToGitea = async ({
         mirror_interval: config.giteaConfig?.mirrorInterval || "8h", // Set mirror interval
         wiki: config.giteaConfig?.wiki || false, // will mirror wiki if it exists
         lfs: config.giteaConfig?.lfs || false, // Enable LFS mirroring if configured
+        releases: true,
         private: repository.isPrivate,
         repo_owner: repoOwner,
-        description: "",
+        description: repository.description || "",
         service: "git",
+        auth_token: decryptedConfig.githubConfig.token,
+        auth_username: config.githubConfig.owner,
+        auth_password: decryptedConfig.githubConfig.token
       },
       {
         Authorization: `token ${decryptedConfig.giteaConfig.token}`,
@@ -683,12 +690,7 @@ export async function mirrorGitHubRepoToGiteaOrg({
         throw new Error(
           "GitHub token is required to mirror private repositories."
         );
-      }
-
-      cloneAddress = repository.cloneUrl.replace(
-        "https://",
-        `https://${decryptedConfig.githubConfig.token}@`
-      );
+      };
     }
 
     // Mark repos as "mirroring" in DB
@@ -715,7 +717,13 @@ export async function mirrorGitHubRepoToGiteaOrg({
         mirror_interval: config.giteaConfig?.mirrorInterval || "8h", // Set mirror interval
         wiki: config.giteaConfig?.wiki || false, // will mirror wiki if it exists
         lfs: config.giteaConfig?.lfs || false, // Enable LFS mirroring if configured
+        releases: true,
         private: repository.isPrivate,
+        repo_owner: repository.owner,
+        description: repository.description || "",
+        auth_token: decryptedConfig.githubConfig.token,
+        auth_username: config.githubConfig.owner,
+        auth_password: decryptedConfig.githubConfig.token
       },
       {
         Authorization: `token ${decryptedConfig.giteaConfig.token}`,
@@ -1233,127 +1241,177 @@ export const mirrorGitRepoIssuesToGitea = async ({
   await processWithRetry(
     filteredIssues,
     async (issue) => {
-      const githubLabelNames =
-        issue.labels
-          ?.map((l) => (typeof l === "string" ? l : l.name))
-          .filter((l): l is string => !!l) || [];
+      const maxRetries = 4;
+      const backoffMinutes = [5, 10, 15, 35]; // delay em minutos
+      let createdIssue: any;
 
-      const giteaLabelIds: number[] = [];
+      // Retry apenas para criar a issue
+      let attemptIssue = 0;
+      async function createIssueWithBackoff() {
+        try {
+          const githubLabelNames =
+            issue.labels
+              ?.map((l) => (typeof l === "string" ? l : l.name))
+              .filter((l): l is string => !!l) || [];
 
-      // Resolve or create labels in Gitea
-      for (const name of githubLabelNames) {
-        if (labelMap.has(name)) {
-          giteaLabelIds.push(labelMap.get(name)!);
-        } else {
+          const giteaLabelIds: number[] = [];
+
+          for (const name of githubLabelNames) {
+            if (labelMap.has(name)) {
+              giteaLabelIds.push(labelMap.get(name)!);
+            } else {
+              try {
+                const created = await httpPost(
+                  `${config.giteaConfig!.url}/api/v1/repos/${giteaOwner}/${repository.name}/labels`,
+                  { name, color: "#ededed" },
+                  { Authorization: `token ${decryptedConfig.giteaConfig!.token}` }
+                );
+                labelMap.set(name, created.data.id);
+                giteaLabelIds.push(created.data.id);
+              } catch (labelErr) {
+                console.error(`Failed to create label "${name}" in Gitea: ${labelErr}`);
+              }
+            }
+          }
+
+          const issueDetail = await octokit.rest.issues.get({
+            owner,
+            repo,
+            issue_number: issue.number,
+          });
+
+          let richIssueBody = `## 📝 Issue Information\n\n`;
+          richIssueBody += `**Original Issue:** ${issue.html_url}\n`;
+          richIssueBody += `**Author:** [@${issue.user?.login}](${issue.user?.html_url})\n`;
+          richIssueBody += `**Created:** ${new Date(issue.created_at).toISOString()}\n`;
+          richIssueBody += `**Status:** ${issue.state === "closed" ? "✅ Closed" : "🔄 Open"}\n`;
+          if (issue.closed_at) {
+            richIssueBody += `**Closed:** ${new Date(issue.closed_at).toISOString()}\n`;
+            if (issueDetail.data.closed_by) {
+              richIssueBody += `**Closed by:** [@${issueDetail.data.closed_by.login}](${issueDetail.data.closed_by.html_url})\n`;
+            }
+          }
+          if (issue.assignees && issue.assignees.length > 0) {
+            richIssueBody += `**Assignees:** ${issue.assignees.map((a) => `[@${a.login}](${a.html_url})`).join(", ")}\n`;
+          }
+          richIssueBody += `\n**Title:** ${issue.title}\n\n---\n\n${issue.body ?? ""}`;
+
+          const issuePayload = {
+            title: issue.title,
+            body: richIssueBody,
+            closed: issue.state === "closed",
+            labels: giteaLabelIds,
+          };
+
+          createdIssue = await httpPost(
+            `${config.giteaConfig!.url}/api/v1/repos/${giteaOwner}/${repository.name}/issues`,
+            issuePayload,
+            { Authorization: `token ${decryptedConfig.giteaConfig!.token}` }
+          );
+
+          console.log(`[Issues] ✅ Created issue #${issue.number}`);
+        } catch (apiError: any) {
+          const isRateLimit = apiError.status === 403 && apiError.message?.includes('rate limit');
+          if (isRateLimit && attemptIssue < maxRetries) {
+            const delayMinutes = backoffMinutes[attemptIssue];
+            attemptIssue++;
+            console.warn(
+              `Rate limit hit for issue #${issue.number}. Retrying creation in ${delayMinutes} minutes (attempt ${attemptIssue}/${maxRetries})`
+            );
+            await new Promise((r) => setTimeout(r, delayMinutes * 60 * 1000));
+            return createIssueWithBackoff();
+          }
+
+          // Fallback básico
+          console.log(`[Issues] Falling back to basic info for issue #${issue.number} due to error: ${apiError}`);
+          const basicPayload = {
+            title: issue.title,
+            body: `**Original Issue:** ${issue.html_url}\n\n**State:** ${issue.state}\n\n---\n\n${issue.body || 'No description provided'}`,
+            labels: [],
+            closed: issue.state === "closed",
+          };
+
           try {
-            const created = await httpPost(
-              `${config.giteaConfig!.url}/api/v1/repos/${giteaOwner}/${
-                repository.name
-              }/labels`,
-              { name, color: "#ededed" }, // Default color
-              {
-                Authorization: `token ${decryptedConfig.giteaConfig!.token}`,
-              }
+            createdIssue = await httpPost(
+              `${config.giteaConfig!.url}/api/v1/repos/${giteaOwner}/${repository.name}/issues`,
+              basicPayload,
+              { Authorization: `token ${decryptedConfig.giteaConfig!.token}` }
             );
-
-            labelMap.set(name, created.data.id);
-            giteaLabelIds.push(created.data.id);
-          } catch (labelErr) {
-            console.error(
-              `Failed to create label "${name}" in Gitea: ${labelErr}`
-            );
+            console.log(`[Issues] ✅ Created basic issue #${issue.number}`);
+          } catch (error) {
+            console.error(`[Issues] ❌ Failed to create issue #${issue.number}: ${error instanceof Error ? error.message : String(error)}`);
+            return;
           }
         }
       }
 
-      const originalAssignees =
-        issue.assignees && issue.assignees.length > 0
-          ? `\n\nOriginally assigned to: ${issue.assignees
-              .map((a) => `@${a.login}`)
-              .join(", ")} on GitHub.`
-          : "";
+      await createIssueWithBackoff();
 
-      const issuePayload: any = {
-        title: issue.title,
-        body: `Originally created by @${
-          issue.user?.login
-        } on GitHub.${originalAssignees}\n\n${issue.body || ""}`,
-        closed: issue.state === "closed",
-        labels: giteaLabelIds,
-      };
+      async function createCommentsWithBackoff() {
+        if (!createdIssue) return;
 
-      // Create the issue in Gitea
-      const createdIssue = await httpPost(
-        `${config.giteaConfig!.url}/api/v1/repos/${giteaOwner}/${
-          repository.name
-        }/issues`,
-        issuePayload,
-        {
-          Authorization: `token ${decryptedConfig.giteaConfig!.token}`,
-        }
-      );
+        let attemptComments = 0;
 
-      // Clone comments
-      const comments = await octokit.paginate(
-        octokit.rest.issues.listComments,
-        {
-          owner,
-          repo,
-          issue_number: issue.number,
-          per_page: 100,
-        },
-        (res) => res.data
-      );
-
-      // Process comments in parallel with concurrency control
-      if (comments.length > 0) {
-        await processWithRetry(
-          comments,
-          async (comment) => {
-            await httpPost(
-              `${config.giteaConfig!.url}/api/v1/repos/${giteaOwner}/${
-                repository.name
-              }/issues/${createdIssue.data.number}/comments`,
-              {
-                body: `@${comment.user?.login} commented on GitHub:\n\n${comment.body}`,
-              },
-              {
-                Authorization: `token ${decryptedConfig.giteaConfig!.token}`,
-              }
+        async function tryComments() {
+          try {
+            const comments = await octokit.paginate(
+              octokit.rest.issues.listComments,
+              { owner, repo, issue_number: issue.number, per_page: 100 },
+              (res) => res.data
             );
-            return comment;
-          },
-          {
-            concurrencyLimit: 5,
-            maxRetries: 2,
-            retryDelay: 1000,
-            onRetry: (_comment, error, attempt) => {
-              console.log(
-                `Retrying comment (attempt ${attempt}): ${error.message}`
+
+            if (comments.length > 0) {
+              await processWithRetry(
+                comments,
+                async (comment) => {
+                  const richCommentBody =
+                    `💬 **Comment from [@${comment.user?.login}](${comment.user?.html_url})**\n` +
+                    `**Date:** ${new Date(comment.created_at).toISOString()}\n\n---\n\n${comment.body}`;
+
+                  await httpPost(
+                    `${config.giteaConfig!.url}/api/v1/repos/${giteaOwner}/${repository.name}/issues/${createdIssue.data.number}/comments`,
+                    { body: richCommentBody },
+                    { Authorization: `token ${decryptedConfig.giteaConfig!.token}` }
+                  );
+                  return comment;
+                },
+                {
+                  concurrencyLimit: 1,
+                  maxRetries: 3,
+                  retryDelay: 1000,
+                  onRetry: (_comment, error, attempt) => {
+                    console.log(`Retrying comment (attempt ${attempt}): ${error.message}`);
+                  },
+                }
               );
-            },
+            }
+          } catch (commentError: any) {
+            const isRateLimit = commentError.status === 403 && commentError.message?.includes('rate limit');
+            if (isRateLimit && attemptComments < maxRetries) {
+              const delayMinutes = backoffMinutes[attemptComments];
+              attemptComments++;
+              console.warn(`Rate limit hit when fetching comments for issue #${issue.number}. Retrying in ${delayMinutes} minutes (attempt ${attemptComments}/${maxRetries})`);
+              await new Promise((r) => setTimeout(r, delayMinutes * 60 * 1000));
+              return tryComments();
+            }
+            console.error(`[Issues] ❌ Failed to process comments for issue #${issue.number}: ${commentError instanceof Error ? commentError.message : String(commentError)}`);
           }
-        );
+        }
+
+        await tryComments();
       }
 
-      return issue;
+      await createCommentsWithBackoff();
     },
     {
-      concurrencyLimit: 3, // Process 3 issues at a time
-      maxRetries: 2,
-      retryDelay: 2000,
+      concurrencyLimit: 3,
+      maxRetries: 3,
+      retryDelay: 5000,
       onProgress: (completed, total, result) => {
         const percentComplete = Math.round((completed / total) * 100);
         if (result) {
-          console.log(
-            `Mirrored issue "${result.title}" (${completed}/${total}, ${percentComplete}%)`
-          );
+          console.log(`Mirrored issue "" (${completed}/${total}, ${percentComplete}%)`);
         }
-      },
-      onRetry: (issue, error, attempt) => {
-        console.log(
-          `Retrying issue "${issue.title}" (attempt ${attempt}): ${error.message}`
-        );
       },
     }
   );
@@ -1630,125 +1688,126 @@ export async function mirrorGitRepoPullRequestsToGitea({
   await processWithRetry(
     pullRequests,
     async (pr) => {
-      try {
-        // Fetch additional PR data for rich metadata
-        const [prDetail, commits, files] = await Promise.all([
-          octokit.rest.pulls.get({ owner, repo, pull_number: pr.number }),
-          octokit.rest.pulls.listCommits({ owner, repo, pull_number: pr.number, per_page: 10 }),
-          octokit.rest.pulls.listFiles({ owner, repo, pull_number: pr.number, per_page: 100 })
-        ]);
+      const maxRetries = 4;
+      const backoffMinutes = [5, 10, 15, 35]; // delay em minutos
+      let attempt = 0;
 
-        // Build rich PR body with metadata
-        let richBody = `## 📋 Pull Request Information\n\n`;
-        richBody += `**Original PR:** ${pr.html_url}\n`;
-        richBody += `**Author:** [@${pr.user?.login}](${pr.user?.html_url})\n`;
-        richBody += `**Created:** ${new Date(pr.created_at).toLocaleDateString()}\n`;
-        richBody += `**Status:** ${pr.state === 'closed' ? (pr.merged_at ? '✅ Merged' : '❌ Closed') : '🔄 Open'}\n`;
-        
-        if (pr.merged_at) {
-          richBody += `**Merged:** ${new Date(pr.merged_at).toLocaleDateString()}\n`;
-          richBody += `**Merged by:** [@${prDetail.data.merged_by?.login}](${prDetail.data.merged_by?.html_url})\n`;
-        }
-
-        richBody += `\n**Base:** \`${pr.base.ref}\` ← **Head:** \`${pr.head.ref}\`\n`;
-        richBody += `\n---\n\n`;
-
-        // Add commit history (up to 10 commits)
-        if (commits.data.length > 0) {
-          richBody += `### 📝 Commits (${commits.data.length}${commits.data.length >= 10 ? '+' : ''})\n\n`;
-          commits.data.slice(0, 10).forEach(commit => {
-            const shortSha = commit.sha.substring(0, 7);
-            richBody += `- [\`${shortSha}\`](${commit.html_url}) ${commit.commit.message.split('\n')[0]}\n`;
-          });
-          if (commits.data.length > 10) {
-            richBody += `\n_...and ${commits.data.length - 10} more commits_\n`;
-          }
-          richBody += `\n`;
-        }
-
-        // Add file changes summary
-        if (files.data.length > 0) {
-          const additions = prDetail.data.additions || 0;
-          const deletions = prDetail.data.deletions || 0;
-          const changedFiles = prDetail.data.changed_files || files.data.length;
-          
-          richBody += `### 📊 Changes\n\n`;
-          richBody += `**${changedFiles} file${changedFiles !== 1 ? 's' : ''} changed** `;
-          richBody += `(+${additions} additions, -${deletions} deletions)\n\n`;
-          
-          // List changed files (up to 20)
-          richBody += `<details>\n<summary>View changed files</summary>\n\n`;
-          files.data.slice(0, 20).forEach(file => {
-            const changeIndicator = file.status === 'added' ? '➕' : 
-                                   file.status === 'removed' ? '➖' : '📝';
-            richBody += `${changeIndicator} \`${file.filename}\` (+${file.additions} -${file.deletions})\n`;
-          });
-          if (files.data.length > 20) {
-            richBody += `\n_...and ${files.data.length - 20} more files_\n`;
-          }
-          richBody += `\n</details>\n\n`;
-        }
-
-        // Add original PR description
-        richBody += `### 📄 Description\n\n`;
-        richBody += pr.body || '_No description provided_';
-        richBody += `\n\n---\n`;
-        richBody += `\n<sub>🔄 This issue represents a GitHub Pull Request. `;
-        richBody += `It cannot be merged through Gitea due to API limitations.</sub>`;
-
-        // Prepare issue title with status indicator
-        const statusPrefix = pr.merged_at ? '[MERGED] ' : (pr.state === 'closed' ? '[CLOSED] ' : '');
-        const issueTitle = `[PR #${pr.number}] ${statusPrefix}${pr.title}`;
-
-        const issueData = {
-          title: issueTitle,
-          body: richBody,
-          labels: pullRequestLabelId ? [pullRequestLabelId] : [],
-          closed: pr.state === "closed" || pr.merged_at !== null,
-        };
-
-        console.log(`[Pull Requests] Creating enriched issue for PR #${pr.number}: ${pr.title}`);
-        await httpPost(
-          `${config.giteaConfig!.url}/api/v1/repos/${giteaOwner}/${repository.name}/issues`,
-          issueData,
-          {
-            Authorization: `token ${decryptedConfig.giteaConfig!.token}`,
-          }
-        );
-        successCount++;
-        console.log(`[Pull Requests] ✅ Successfully created issue for PR #${pr.number}`);
-      } catch (apiError) {
-        // If the detailed fetch fails, fall back to basic PR info
-        console.log(`[Pull Requests] Falling back to basic info for PR #${pr.number} due to error: ${apiError}`);
-        const basicIssueData = {
-          title: `[PR #${pr.number}] ${pr.title}`,
-          body: `**Original Pull Request:** ${pr.html_url}\n\n**State:** ${pr.state}\n**Merged:** ${pr.merged_at ? 'Yes' : 'No'}\n\n---\n\n${pr.body || 'No description provided'}`,
-          labels: pullRequestLabelId ? [pullRequestLabelId] : [],
-          closed: pr.state === "closed" || pr.merged_at !== null,
-        };
-        
+      async function createRichIssue() {
         try {
+          // Fetch additional PR data for rich metadata
+          const [prDetail, commits, files] = await Promise.all([
+            octokit.rest.pulls.get({ owner, repo, pull_number: pr.number }),
+            octokit.rest.pulls.listCommits({ owner, repo, pull_number: pr.number, per_page: 10 }),
+            octokit.rest.pulls.listFiles({ owner, repo, pull_number: pr.number, per_page: 100 })
+          ]);
+
+          // Build rich PR body
+          let richBody = `## 📋 Pull Request Information\n\n`;
+          richBody += `**Original PR:** ${pr.html_url}\n`;
+          richBody += `**Author:** [@${pr.user?.login}](${pr.user?.html_url})\n`;
+          richBody += `**Created:** ${new Date(pr.created_at).toISOString()}\n`;
+          richBody += `**Status:** ${pr.state === 'closed' ? (pr.merged_at ? '✅ Merged' : '❌ Closed') : '🔄 Open'}\n`;
+          if (pr.merged_at) {
+            richBody += `**Merged:** ${new Date(pr.merged_at).toISOString()}\n`;
+            richBody += `**Merged by:** [@${prDetail.data.merged_by?.login}](${prDetail.data.merged_by?.html_url})\n`;
+          }
+          richBody += `\n**Base:** \`${pr.base.ref}\` ← **Head:** \`${pr.head.ref}\`\n\n---\n\n`;
+
+          // Commits
+          if (commits.data.length > 0) {
+            richBody += `### 📝 Commits (${commits.data.length}${commits.data.length >= 10 ? '+' : ''})\n\n`;
+            commits.data.slice(0, 10).forEach(commit => {
+              const shortSha = commit.sha.substring(0, 7);
+              richBody += `- [\`${shortSha}\`](${commit.html_url}) ${commit.commit.message.split('\n')[0]}\n`;
+            });
+            if (commits.data.length > 10) {
+              richBody += `\n_...and ${commits.data.length - 10} more commits_\n`;
+            }
+            richBody += `\n`;
+          }
+
+          // File changes
+          if (files.data.length > 0) {
+            const additions = prDetail.data.additions || 0;
+            const deletions = prDetail.data.deletions || 0;
+            const changedFiles = prDetail.data.changed_files || files.data.length;
+            richBody += `### 📊 Changes\n\n`;
+            richBody += `**${changedFiles} file${changedFiles !== 1 ? 's' : ''} changed** `;
+            richBody += `(+${additions} additions, -${deletions} deletions)\n\n`;
+            richBody += `<details>\n<summary>View changed files</summary>\n\n`;
+            files.data.slice(0, 20).forEach(file => {
+              const changeIndicator = file.status === 'added' ? '➕' : file.status === 'removed' ? '➖' : '📝';
+              richBody += `${changeIndicator} \`${file.filename}\` (+${file.additions} -${file.deletions})\n`;
+            });
+            if (files.data.length > 20) {
+              richBody += `\n_...and ${files.data.length - 20} more files_\n`;
+            }
+            richBody += `\n</details>\n\n`;
+          }
+
+          richBody += `### 📄 Description\n\n${pr.body || '_No description provided_'}\n\n---\n`;
+          richBody += `\n<sub>🔄 This issue represents a GitHub Pull Request. It cannot be merged through Gitea due to API limitations.</sub>`;
+
+          const statusPrefix = pr.merged_at ? '[MERGED] ' : (pr.state === 'closed' ? '[CLOSED] ' : '');
+          const issueTitle = `[PR #${pr.number}] ${statusPrefix}${pr.title}`;
+
+          const issueData = {
+            title: issueTitle,
+            body: richBody,
+            labels: pullRequestLabelId ? [pullRequestLabelId] : [],
+            closed: pr.state === "closed" || pr.merged_at !== null,
+          };
+
+          console.log(`[Pull Requests] Creating enriched issue for PR #${pr.number}: ${pr.title}`);
           await httpPost(
             `${config.giteaConfig!.url}/api/v1/repos/${giteaOwner}/${repository.name}/issues`,
-            basicIssueData,
-            {
-              Authorization: `token ${decryptedConfig.giteaConfig!.token}`,
-            }
+            issueData,
+            { Authorization: `token ${decryptedConfig.giteaConfig!.token}` }
           );
+
           successCount++;
-          console.log(`[Pull Requests] ✅ Created basic issue for PR #${pr.number}`);
-        } catch (error) {
-          failedCount++;
-          console.error(
-            `[Pull Requests] ❌ Failed to mirror PR #${pr.number}: ${error instanceof Error ? error.message : String(error)}`
-          );
+          console.log(`[Pull Requests] ✅ Successfully created issue for PR #${pr.number}`);
+        } catch (apiError: any) {
+          // Detect rate limit error
+          const isRateLimit = apiError.status === 403 && apiError.message?.includes('rate limit');
+          if (isRateLimit && attempt < maxRetries) {
+            const delayMinutes = backoffMinutes[attempt];
+            attempt++;
+            console.warn(`[Pull Requests] Rate limit hit for PR #${pr.number}. Retrying in ${delayMinutes} minutes (attempt ${attempt}/${maxRetries})`);
+            await new Promise(r => setTimeout(r, delayMinutes * 60 * 1000));
+            return createRichIssue();
+          }
+
+          // Fallback para o corpo básico
+          console.log(`[Pull Requests] Falling back to basic info for PR #${pr.number} due to error: ${apiError}`);
+          const basicIssueData = {
+            title: `[PR #${pr.number}] ${pr.title}`,
+            body: `**Original Pull Request:** ${pr.html_url}\n\n**State:** ${pr.state}\n**Merged:** ${pr.merged_at ? 'Yes' : 'No'}\n\n---\n\n${pr.body || 'No description provided'}`,
+            labels: pullRequestLabelId ? [pullRequestLabelId] : [],
+            closed: pr.state === "closed" || pr.merged_at !== null,
+          };
+
+          try {
+            await httpPost(
+              `${config.giteaConfig!.url}/api/v1/repos/${giteaOwner}/${repository.name}/issues`,
+              basicIssueData,
+              { Authorization: `token ${decryptedConfig.giteaConfig!.token}` }
+            );
+            successCount++;
+            console.log(`[Pull Requests] ✅ Created basic issue for PR #${pr.number}`);
+          } catch (error) {
+            failedCount++;
+            console.error(`[Pull Requests] ❌ Failed to mirror PR #${pr.number}: ${error instanceof Error ? error.message : String(error)}`);
+          }
         }
       }
+
+      await createRichIssue();
     },
     {
       concurrencyLimit: 5,
       maxRetries: 3,
-      retryDelay: 1000,
+      retryDelay: 5000,
     }
   );
 

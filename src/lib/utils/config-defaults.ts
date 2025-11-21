@@ -8,6 +8,7 @@ export interface DefaultConfigOptions {
   envOverrides?: {
     githubToken?: string;
     githubUsername?: string;
+    githubPassword?: string;
     giteaUrl?: string;
     giteaToken?: string;
     giteaUsername?: string;
@@ -37,6 +38,7 @@ export async function createDefaultConfig({ userId, envOverrides = {} }: Default
   // Read environment variables for overrides
   const githubToken = envOverrides.githubToken || process.env.GITHUB_TOKEN || "";
   const githubUsername = envOverrides.githubUsername || process.env.GITHUB_USERNAME || "";
+  const githubPassword = envOverrides.githubPassword || process.env.GITHUB_PASSWORD || "";
   const giteaUrl = envOverrides.giteaUrl || process.env.GITEA_URL || "";
   const giteaToken = envOverrides.giteaToken || process.env.GITEA_TOKEN || "";
   const giteaUsername = envOverrides.giteaUsername || process.env.GITEA_USERNAME || "";
@@ -62,8 +64,9 @@ export async function createDefaultConfig({ userId, envOverrides = {} }: Default
     isActive: true,
     githubConfig: {
       owner: githubUsername,
-      type: "personal",
+      password: githubPassword ? encrypt(githubPassword) : "",
       token: githubToken ? encrypt(githubToken) : "",
+      type: "personal",
       includeStarred: false,
       includeForks: true,
       includeArchived: false,

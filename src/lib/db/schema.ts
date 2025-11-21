@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { sqliteTable, text, integer, index } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
+import { password } from "bun";
 
 // ===== Zod Validation Schemas =====
 export const userSchema = z.object({
@@ -15,8 +16,9 @@ export const userSchema = z.object({
 
 export const githubConfigSchema = z.object({
   owner: z.string(),
-  type: z.enum(["personal", "organization"]),
+  password: z.string(),
   token: z.string(),
+  type: z.enum(["personal", "organization"]),
   includeStarred: z.boolean().default(false),
   includeForks: z.boolean().default(true),
   skipForks: z.boolean().default(false),

@@ -132,10 +132,8 @@ export async function getOrCreateGiteaOrgEnhanced({
       const visibility = config.giteaConfig.visibility || "public";
       const createOrgPayload = {
         username: orgName,
-        full_name: orgName === "starred" ? "Starred Repositories" : orgName,
-        description: orgName === "starred" 
-          ? "Repositories starred on GitHub" 
-          : `Mirrored from GitHub organization: ${orgName}`,
+        full_name: orgName,
+        description: `Mirrored from GitHub organization: ${orgName}`,
         website: "",
         location: "",
         visibility: visibility,
@@ -150,11 +148,13 @@ export async function getOrCreateGiteaOrgEnhanced({
           }
         );
 
-        console.log(`[Org Creation] Successfully created organization ${orgName} with ID: ${createResponse.data.id}`);
-        
+        console.log(
+          `[Org Creation] Successfully created organization ${orgName} with ID: ${createResponse.data.id}`
+        );
+
         await createMirrorJob({
           userId: config.userId,
-          organizationId: orgId,
+          organizationId: `${createResponse.data.id}`,
           organizationName: orgName,
           message: `Successfully created Gitea organization: ${orgName}`,
           status: "synced",
@@ -162,40 +162,60 @@ export async function getOrCreateGiteaOrgEnhanced({
         });
 
         return createResponse.data.id;
-      } catch (createError) {
-        // Check if it's a duplicate error
+
+      } catch (createError: any) {
         if (createError instanceof HttpError) {
-          const errorResponse = createError.response?.toLowerCase() || "";
-          const isDuplicateError = 
+          const errorResponse = (createError.response?.toLowerCase() || "");
+          const isDuplicateError =
             errorResponse.includes("duplicate") ||
             errorResponse.includes("already exists") ||
             errorResponse.includes("uqe_user_lower_name") ||
             errorResponse.includes("constraint");
 
-          if (isDuplicateError && attempt < maxRetries - 1) {
-            console.log(`[Org Creation] Organization creation failed due to duplicate. Will retry check.`);
-            
-            // Wait before retry with exponential backoff
-            const delay = process.env.NODE_ENV === 'test' ? 0 : retryDelay * Math.pow(2, attempt);
-            console.log(`[Org Creation] Waiting ${delay}ms before retry...`);
-            if (delay > 0) {
-              await new Promise(resolve => setTimeout(resolve, delay));
+          if (isDuplicateError) {
+            console.log(
+              `[Org Creation] Organization creation failed due to duplicate. Checking if user exists...`
+            );
+            if (createOrgPayload.username.toLowerCase() === config.githubConfig.owner) {
+              return 1
             }
-            continue; // Retry the loop
+            try {
+              
+              const existingUsers = await httpGet<{ id: number; username: string }[]>(
+                `${config.giteaConfig.url}/api/v1/admin/users?login_name=${createOrgPayload.username}`,
+                {
+                  Authorization: `token ${decryptedConfig.giteaConfig.token}`
+                }
+              );
+              
+              if (existingUsers.length > 0) {
+                const userId = existingUsers[0].id;
+                console.log(`[Org Creation] Found existing user ${createOrgPayload.username} with ID ${userId}`);
+                return userId; // Retorna o ID existente
+              } else {
+                console.log(`[Org Creation] No existing user found. Retrying...`);
+              }
+            } catch (getError) {
+              console.error("[Org Creation] Error checking existing user:", getError);
+              throw getError;
+            }
           }
-          
-          // Check for permission errors
+
+          // Permissão negada
           if (createError.status === 403) {
-            console.error(`[Org Creation] Permission denied: User may not have rights to create organizations`);
-            throw new Error(`Permission denied: Your Gitea user account does not have permission to create organizations. Please ensure your account has the necessary privileges or contact your Gitea administrator.`);
+            throw new Error(
+              `Permission denied: Your Gitea user account does not have permission to create organizations.`
+            );
           }
-          
-          // Check for authentication errors
+
+          // Falha de autenticação
           if (createError.status === 401) {
-            console.error(`[Org Creation] Authentication failed when creating organization`);
-            throw new Error(`Authentication failed: The Gitea token does not have sufficient permissions to create organizations. Please ensure your token has 'write:organization' scope.`);
+            throw new Error(
+              `Authentication failed: The Gitea token does not have sufficient permissions to create organizations.`
+            );
           }
         }
+
         throw createError;
       }
     } catch (error) {

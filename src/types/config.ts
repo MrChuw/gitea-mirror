@@ -31,6 +31,7 @@ export interface DatabaseCleanupConfig {
 
 export interface GitHubConfig {
   username: string;
+  password: string;
   token: string;
   privateRepositories: boolean;
   mirrorStarred: boolean;
